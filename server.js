@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 3000;
 let audioChunks = [];
 
 // ---------- WAV HEADER FOR 8-BIT PCM ----------
-function createWavHeader(dataLength, sampleRate = 8000, channels = 1, bits = 8) {
+function createWavHeader(dataLength, sampleRate = 16000, channels = 1, bits = 8) {
   const blockAlign = channels * bits / 8;
   const byteRate = sampleRate * blockAlign;
   const buffer = Buffer.alloc(44);
@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
     const pcm = Buffer.concat(audioChunks);
 
     // Create WAV header for 8-bit unsigned PCM
-    const header = createWavHeader(pcm.length, 8000, 1, 8);
+    const header = createWavHeader(pcm.length, 16000, 1, 8);
 
     const wav = Buffer.concat([header, pcm]);
 
