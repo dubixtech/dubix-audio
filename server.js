@@ -17,8 +17,8 @@ const SAMPLE_RATE = 16000;
 const WINDOW_MS = 1200;
 const STRIDE_MS = 300;
 
-const WINDOW_SIZE = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);   // 19200
-const STRIDE_SIZE = Math.floor((SAMPLE_RATE * STRIDE_MS) / 1000);   // 4800
+const WINDOW_SIZE = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);
+const STRIDE_SIZE = Math.floor((SAMPLE_RATE * STRIDE_MS) / 1000);
 
 let classifier = null;
 let modelReady = false;
@@ -34,10 +34,19 @@ Module.onRuntimeInitialized = () => {
         };
         modelReady = true;
         console.log("✅ Edge Impulse WASM loaded successfully");
+        console.log("Model properties:", classifier.getProps ? classifier.getProps() : "N/A");
     } catch (e) {
         console.error("❌ WASM init failed", e);
     }
 };
+
+/* Helper: Copy Float32Array to WASM heap (Official Edge Impulse way) */
+function arrayToHeap(data) {
+    const numBytes = data.length * 4; // float32 = 4 bytes
+    const ptr = Module._malloc(numBytes);
+    Module.HEAPF32.set(data, ptr / 4);
+    return { ptr, size: data.length };
+}
 
 /* =========================
    WEBSOCKET
@@ -48,6 +57,7 @@ wss.on("connection", (ws) => {
     const audioBuffer = new Float32Array(WINDOW_SIZE);
     let writeIndex = 0;
     let strideCounter = 0;
+    let samplesReceived = 0;
 
     ws.on("message", (msg) => {
         if (!modelReady) return;
@@ -61,23 +71,24 @@ wss.on("connection", (ws) => {
                 writeIndex = (writeIndex + 1) % WINDOW_SIZE;
             }
 
+            samplesReceived += samples.length;
             strideCounter += samples.length;
 
-            if (strideCounter >= STRIDE_SIZE) {
+            // Run inference every 300ms
+            if (strideCounter >= STRIDE_SIZE && samplesReceived >= WINDOW_SIZE) {
                 strideCounter = 0;
 
-                // === FIXED: Proper WASM call ===
-                const inputPtr = Module._malloc(audioBuffer.length * 4); // 4 bytes per float
-                Module.HEAPF32.set(audioBuffer, inputPtr / 4);
+                const heap = arrayToHeap(audioBuffer);
+                const debug = false;
 
-                const result = classifier.run(inputPtr, audioBuffer.length, false);
+                const result = classifier.run(heap.ptr, heap.size, debug);
 
-                Module._free(inputPtr);
+                Module._free(heap.ptr);
 
-                if (result && result.result === 0) {
+                if (result) {
                     ws.send(JSON.stringify(result));
                 } else {
-                    console.error("Classification failed:", result);
+                    console.error("No result from classifier");
                 }
             }
         } catch (err) {
