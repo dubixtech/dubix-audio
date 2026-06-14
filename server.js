@@ -1,95 +1,98 @@
-import http from "http";
-import { WebSocketServer } from "ws";
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+const path = require("path");
 
-const PORT = process.env.PORT || 3000;
+const Module = require("./public/edge-impulse-standalone.js");
 
-// buffer to store received audio frames
-let audioChunks = [];
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-// ---------- WAV HEADER FOR 8-BIT PCM ----------
-function createWavHeader(dataLength, sampleRate = 16000, channels = 1, bits = 8) {
-  const blockAlign = channels * bits / 8;
-  const byteRate = sampleRate * blockAlign;
-  const buffer = Buffer.alloc(44);
+app.use(express.static("public"));
 
-  buffer.write("RIFF", 0);                    // ChunkID
-  buffer.writeUInt32LE(36 + dataLength, 4);   // ChunkSize
-  buffer.write("WAVE", 8);                    // Format
-  buffer.write("fmt ", 12);                   // Subchunk1ID
-  buffer.writeUInt32LE(16, 16);               // Subchunk1Size
-  buffer.writeUInt16LE(1, 20);                // AudioFormat (PCM)
-  buffer.writeUInt16LE(channels, 22);         // NumChannels
-  buffer.writeUInt32LE(sampleRate, 24);       // SampleRate
-  buffer.writeUInt32LE(byteRate, 28);         // ByteRate
-  buffer.writeUInt16LE(blockAlign, 32);       // BlockAlign
-  buffer.writeUInt16LE(bits, 34);             // BitsPerSample
-  buffer.write("data", 36);                   // Subchunk2ID
-  buffer.writeUInt32LE(dataLength, 40);       // Subchunk2Size
+/* =========================
+   MODEL CONFIG
+========================= */
+const SAMPLE_RATE = 16000;
+const WINDOW_MS = 1200;     // Keep 1.2 second window
+const STRIDE_MS = 300;      // ← CHANGED: Now every 300ms
 
-  return buffer;
-}
+const WINDOW_SIZE = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);   // 19200
+const STRIDE_SIZE = Math.floor((SAMPLE_RATE * STRIDE_MS) / 1000);   // 4800  ← New stride size
 
-// ---------- HTTP SERVER ----------
-const server = http.createServer((req, res) => {
-  if (req.url === "/audio") {
-    if (audioChunks.length === 0) {
-      res.writeHead(404);
-      res.end("No audio recorded yet");
-      return;
+let classifier = null;
+let modelReady = false;
+
+/* =========================
+   INIT EDGE IMPULSE MODEL
+========================= */
+Module.onRuntimeInitialized = () => {
+    try {
+        classifier = {
+            run: Module.run_classifier,
+            getProps: Module.get_properties
+        };
+        modelReady = true;
+        console.log("✅ Edge Impulse WASM model loaded");
+        console.log(`Model ready - Window: ${WINDOW_MS}ms | Stride: ${STRIDE_MS}ms`);
+    } catch (err) {
+        console.error("❌ Failed to initialize classifier:", err);
     }
+};
 
-    // Combine all 8-bit PCM chunks
-    const pcm = Buffer.concat(audioChunks);
+/* =========================
+   WEBSOCKET SERVER
+========================= */
+wss.on("connection", (ws) => {
+    console.log("📡 Client connected");
 
-    // Create WAV header for 8-bit unsigned PCM
-    const header = createWavHeader(pcm.length, 16000, 1, 8);
+    const audioBuffer = new Float32Array(WINDOW_SIZE);
+    let writeIndex = 0;
+    let strideCounter = 0;
 
-    const wav = Buffer.concat([header, pcm]);
+    ws.on("message", (msg) => {
+        if (!modelReady) {
+            ws.send(JSON.stringify({ error: "Model not ready" }));
+            return;
+        }
 
-    res.writeHead(200, {
-      "Content-Type": "audio/wav",
-      "Content-Length": wav.length,
+        try {
+            const samples = new Float32Array(JSON.parse(msg));
+
+            // Add new samples to circular buffer
+            for (let i = 0; i < samples.length; i++) {
+                audioBuffer[writeIndex] = samples[i];
+                writeIndex = (writeIndex + 1) % WINDOW_SIZE;
+            }
+
+            strideCounter += samples.length;
+
+            // Run inference every STRIDE_SIZE samples (300ms)
+            if (strideCounter >= STRIDE_SIZE) {
+                strideCounter = 0;
+
+                // Only run when we have at least one full window
+                const input = audioBuffer.slice();
+                const result = classifier.run(input, false);
+                
+                ws.send(JSON.stringify(result));
+            }
+        } catch (err) {
+            console.error("Error processing audio:", err);
+            ws.send(JSON.stringify({ error: "Invalid data" }));
+        }
     });
 
-    res.end(wav);
-    return;
-  }
-
-  if (req.url === "/clear") {
-    audioChunks = [];
-    res.end("Audio buffer cleared");
-    return;
-  }
-
-  res.end("WSS Audio Server Running");
+    ws.on("close", () => console.log("📴 Client disconnected"));
+    ws.on("error", (err) => console.error("WS Error:", err));
 });
 
-// ---------- WEBSOCKET ----------
-const wss = new WebSocketServer({ server });
-
-wss.on("connection", (ws) => {
-  console.log("ESP32 connected");
-
-  // Auto-clear previous audio when a new client connects
-  audioChunks = [];
-  console.log("Audio buffer cleared for new connection");
-
-  ws.on("message", (data, isBinary) => {
-    if (isBinary) {
-      // Treat as 8-bit unsigned PCM
-      audioChunks.push(Buffer.from(data));
-      console.log("Received audio frame:", data.length, "bytes");
-    } else {
-      console.log("Text message:", data.toString());
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("Client disconnected");
-  });
-});
-
-// ---------- START SERVER ----------
+/* =========================
+   START SERVER
+========================= */
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`Inference every ${STRIDE_MS}ms with ${WINDOW_MS}ms window`);
 });
