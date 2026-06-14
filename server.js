@@ -24,7 +24,7 @@ let classifier = null;
 let modelReady = false;
 
 /* =========================
-   INIT EDGE IMPULSE MODEL
+   INIT MODEL
 ========================= */
 Module.onRuntimeInitialized = () => {
     try {
@@ -33,19 +33,46 @@ Module.onRuntimeInitialized = () => {
             getProps: Module.get_properties
         };
         modelReady = true;
-        console.log("✅ Edge Impulse WASM loaded successfully");
-        console.log("Model properties:", classifier.getProps ? classifier.getProps() : "N/A");
+        console.log("✅ Edge Impulse WASM loaded");
+        if (classifier.getProps) {
+            console.log("Model info:", classifier.getProps());
+        }
     } catch (e) {
-        console.error("❌ WASM init failed", e);
+        console.error("WASM init failed", e);
     }
 };
 
-/* Helper: Copy Float32Array to WASM heap (Official Edge Impulse way) */
+/* Helper: array to WASM heap */
 function arrayToHeap(data) {
-    const numBytes = data.length * 4; // float32 = 4 bytes
+    const numBytes = data.length * 4;
     const ptr = Module._malloc(numBytes);
     Module.HEAPF32.set(data, ptr / 4);
     return { ptr, size: data.length };
+}
+
+/* Parse WASM result into clean JS object */
+function parseResult(ret) {
+    if (!ret) return { error: "No result" };
+
+    const result = {
+        anomaly: ret.anomaly !== undefined ? ret.anomaly : null,
+        results: []
+    };
+
+    // Handle classification results
+    if (ret.classification && typeof ret.classification.size === 'function') {
+        for (let i = 0; i < ret.classification.size(); i++) {
+            const c = ret.classification.get(i);
+            result.results.push({
+                label: c.label,
+                value: c.value
+            });
+        }
+    } else if (ret.results) {
+        result.results = ret.results;
+    }
+
+    return result;
 }
 
 /* =========================
@@ -57,7 +84,7 @@ wss.on("connection", (ws) => {
     const audioBuffer = new Float32Array(WINDOW_SIZE);
     let writeIndex = 0;
     let strideCounter = 0;
-    let samplesReceived = 0;
+    let totalSamples = 0;
 
     ws.on("message", (msg) => {
         if (!modelReady) return;
@@ -65,31 +92,29 @@ wss.on("connection", (ws) => {
         try {
             const samples = new Float32Array(JSON.parse(msg));
 
-            // Fill circular buffer
+            // Fill rolling buffer
             for (let i = 0; i < samples.length; i++) {
                 audioBuffer[writeIndex] = samples[i];
                 writeIndex = (writeIndex + 1) % WINDOW_SIZE;
             }
 
-            samplesReceived += samples.length;
+            totalSamples += samples.length;
             strideCounter += samples.length;
 
-            // Run inference every 300ms
-            if (strideCounter >= STRIDE_SIZE && samplesReceived >= WINDOW_SIZE) {
+            if (strideCounter >= STRIDE_SIZE && totalSamples >= WINDOW_SIZE) {
                 strideCounter = 0;
 
                 const heap = arrayToHeap(audioBuffer);
-                const debug = false;
+                const debug = true;                    // ← Enable debug for now
 
-                const result = classifier.run(heap.ptr, heap.size, debug);
-
+                const rawResult = classifier.run(heap.ptr, heap.size, debug);
                 Module._free(heap.ptr);
 
-                if (result) {
-                    ws.send(JSON.stringify(result));
-                } else {
-                    console.error("No result from classifier");
-                }
+                const cleanResult = parseResult(rawResult);
+                ws.send(JSON.stringify(cleanResult));
+
+                // Log on server for debugging
+                console.log("Prediction sent:", cleanResult);
             }
         } catch (err) {
             console.error("Processing error:", err.message);
