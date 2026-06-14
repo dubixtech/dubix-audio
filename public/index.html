@@ -1,56 +1,144 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Edge Impulse Live Test</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge Impulse Live Audio Classifier</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        button { padding: 12px 20px; font-size: 16px; margin: 10px 0; }
+        #status { font-weight: bold; margin: 10px 0; }
+        #output { 
+            background: #f4f4f4; 
+            padding: 15px; 
+            border-radius: 8px; 
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .high-confidence { color: green; font-weight: bold; }
+    </style>
 </head>
 <body>
+    <h1>🎤 Edge Impulse Live Classifier</h1>
+    <p>Window: 1.2s | Stride: 300ms</p>
+    
+    <button id="start">Start Microphone</button>
+    <button id="stop" disabled>Stop</button>
+    
+    <div id="status">Disconnected</div>
+    <pre id="output">Waiting for connection...</pre>
 
-<h2>Wake Word Detection</h2>
+    <script>
+        const statusEl = document.getElementById("status");
+        const outputEl = document.getElementById("output");
+        const startBtn = document.getElementById("start");
+        const stopBtn = document.getElementById("stop");
 
-<button id="start">Start Mic</button>
+        let ws;
+        let audioContext;
+        let processor;
+        let stream;
 
-<pre id="out">Waiting...</pre>
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${location.host}`);
+            
+            ws.onopen = () => {
+                statusEl.textContent = "✅ Connected";
+                statusEl.style.color = "green";
+            };
 
-<script>
+            ws.onmessage = (event) => {
+                try {
+                    const result = JSON.parse(event.data);
+                    
+                    if (result.error) {
+                        outputEl.textContent = `Error: ${result.error}`;
+                        return;
+                    }
 
-const out = document.getElementById("out");
+                    // Pretty print results
+                    let html = `<strong>Prediction:</strong><br>`;
+                    
+                    if (result.results && result.results.length > 0) {
+                        result.results.forEach(r => {
+                            const conf = (r.value * 100).toFixed(1);
+                            const cls = r.label;
+                            html += `${cls}: <span class="high-confidence">${conf}%</span><br>`;
+                        });
+                    } else {
+                        html += JSON.stringify(result, null, 2);
+                    }
+                    
+                    outputEl.innerHTML = html;
+                } catch (e) {
+                    outputEl.textContent = event.data;
+                }
+            };
 
-const ws = new WebSocket(`ws://${location.host}`);
+            ws.onclose = () => {
+                statusEl.textContent = "❌ Disconnected";
+                statusEl.style.color = "red";
+            };
 
-ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    out.textContent = JSON.stringify(data, null, 2);
-};
-
-document.getElementById("start").onclick = async () => {
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true
-    });
-
-    const ctx = new AudioContext({
-        sampleRate: 16000
-    });
-
-    const source = ctx.createMediaStreamSource(stream);
-
-    const processor = ctx.createScriptProcessor(1024, 1, 1);
-
-    source.connect(processor);
-    processor.connect(ctx.destination);
-
-    processor.onaudioprocess = (e) => {
-
-        const samples =
-            e.inputBuffer.getChannelData(0);
-
-        if (ws.readyState === 1) {
-            ws.send(JSON.stringify(Array.from(samples)));
+            ws.onerror = () => {
+                statusEl.textContent = "❌ WebSocket Error";
+                statusEl.style.color = "red";
+            };
         }
-    };
-};
 
-</script>
+        startBtn.onclick = async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    } 
+                });
 
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+
+                const source = audioContext.createMediaStreamSource(stream);
+                processor = audioContext.createScriptProcessor(1024, 1, 1);
+
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+
+                processor.onaudioprocess = (e) => {
+                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+                    const samples = e.inputBuffer.getChannelData(0);
+                    // Send as array (Edge Impulse WASM expects Float32)
+                    ws.send(JSON.stringify(Array.from(samples)));
+                };
+
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                statusEl.textContent = "🎙️ Listening...";
+
+            } catch (err) {
+                console.error(err);
+                alert("Microphone access denied or not supported.");
+            }
+        };
+
+        stopBtn.onclick = () => {
+            if (processor) processor.disconnect();
+            if (stream) stream.getTracks().forEach(track => track.stop());
+            if (audioContext) audioContext.close();
+            
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusEl.textContent = "Stopped";
+        };
+
+        // Auto-connect WebSocket
+        connectWebSocket();
+    </script>
 </body>
 </html>
