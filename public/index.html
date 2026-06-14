@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edge Impulse Live Test</title>
+</head>
+<body>
+
+<h2>Wake Word Detection</h2>
+
+<button id="start">Start Mic</button>
+
+<pre id="out">Waiting...</pre>
+
+<script>
+
+const out = document.getElementById("out");
+
+const ws = new WebSocket(`ws://${location.host}`);
+
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    out.textContent = JSON.stringify(data, null, 2);
+};
+
+document.getElementById("start").onclick = async () => {
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true
+    });
+
+    const ctx = new AudioContext({
+        sampleRate: 16000
+    });
+
+    const source = ctx.createMediaStreamSource(stream);
+
+    const processor = ctx.createScriptProcessor(1024, 1, 1);
+
+    source.connect(processor);
+    processor.connect(ctx.destination);
+
+    processor.onaudioprocess = (e) => {
+
+        const samples =
+            e.inputBuffer.getChannelData(0);
+
+        if (ws.readyState === 1) {
+            ws.send(JSON.stringify(Array.from(samples)));
+        }
+    };
+};
+
+</script>
+
+</body>
+</html>
