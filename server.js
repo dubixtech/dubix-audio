@@ -17,12 +17,15 @@ const SAMPLE_RATE = 16000;
 const WINDOW_MS = 1200;
 const STRIDE_MS = 300;
 
-const WINDOW_SIZE = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);
-const STRIDE_SIZE = Math.floor((SAMPLE_RATE * STRIDE_MS) / 1000);
+const WINDOW_SIZE = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);   // 19200
+const STRIDE_SIZE = Math.floor((SAMPLE_RATE * STRIDE_MS) / 1000);   // 4800
 
 let classifier = null;
 let modelReady = false;
 
+/* =========================
+   INIT EDGE IMPULSE MODEL
+========================= */
 Module.onRuntimeInitialized = () => {
     try {
         classifier = {
@@ -52,6 +55,7 @@ wss.on("connection", (ws) => {
         try {
             const samples = new Float32Array(JSON.parse(msg));
 
+            // Fill circular buffer
             for (let i = 0; i < samples.length; i++) {
                 audioBuffer[writeIndex] = samples[i];
                 writeIndex = (writeIndex + 1) % WINDOW_SIZE;
@@ -61,9 +65,20 @@ wss.on("connection", (ws) => {
 
             if (strideCounter >= STRIDE_SIZE) {
                 strideCounter = 0;
-                const input = audioBuffer.slice();
-                const result = classifier.run(input, false);
-                ws.send(JSON.stringify(result));
+
+                // === FIXED: Proper WASM call ===
+                const inputPtr = Module._malloc(audioBuffer.length * 4); // 4 bytes per float
+                Module.HEAPF32.set(audioBuffer, inputPtr / 4);
+
+                const result = classifier.run(inputPtr, audioBuffer.length, false);
+
+                Module._free(inputPtr);
+
+                if (result && result.result === 0) {
+                    ws.send(JSON.stringify(result));
+                } else {
+                    console.error("Classification failed:", result);
+                }
             }
         } catch (err) {
             console.error("Processing error:", err.message);
@@ -74,10 +89,9 @@ wss.on("connection", (ws) => {
 });
 
 /* =========================
-   START SERVER (Important for Render)
+   START SERVER
 ========================= */
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🔌 WebSocket ready`);
 });
