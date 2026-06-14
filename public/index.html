@@ -3,31 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Edge Impulse Live Audio Classifier</title>
+    <title>Edge Impulse Live Classifier</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        h1 { color: #333; }
-        button { padding: 12px 20px; font-size: 16px; margin: 10px 0; }
-        #status { font-weight: bold; margin: 10px 0; }
-        #output { 
-            background: #f4f4f4; 
-            padding: 15px; 
-            border-radius: 8px; 
-            white-space: pre-wrap;
-            max-height: 400px;
-            overflow-y: auto;
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f8f9fa;
         }
-        .high-confidence { color: green; font-weight: bold; }
+        h1 { color: #333; }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            margin: 10px 5px;
+            cursor: pointer;
+        }
+        #status {
+            font-weight: bold;
+            margin: 15px 0;
+            padding: 10px;
+            border-radius: 6px;
+        }
+        #output {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            min-height: 200px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            overflow-y: auto;
+            max-height: 60vh;
+        }
+        .high-confidence {
+            color: green;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
-    <h1>🎤 Edge Impulse Live Classifier</h1>
-    <p>Window: 1.2s | Stride: 300ms</p>
-    
+    <h1>🎤 Edge Impulse Live Audio Classifier</h1>
+    <p><strong>Window:</strong> 1.2s | <strong>Stride:</strong> 300ms</p>
+    <p><strong>Server:</strong> https://dubix-audio.onrender.com</p>
+
     <button id="start">Start Microphone</button>
-    <button id="stop" disabled>Stop</button>
-    
-    <div id="status">Disconnected</div>
+    <button id="stop" disabled>Stop Listening</button>
+
+    <div id="status">Connecting to server...</div>
     <pre id="output">Waiting for connection...</pre>
 
     <script>
@@ -36,41 +57,44 @@
         const startBtn = document.getElementById("start");
         const stopBtn = document.getElementById("stop");
 
-        let ws;
-        let audioContext;
-        let processor;
-        let stream;
+        let ws = null;
+        let audioContext = null;
+        let processor = null;
+        let stream = null;
 
+        const SERVER_URL = "https://dubix-audio.onrender.com";
+
+        // Connect WebSocket using direct URL
         function connectWebSocket() {
-            ws = new WebSocket(`ws://${location.host}`);
-            
+            // Use wss:// for HTTPS
+            ws = new WebSocket("wss://dubix-audio.onrender.com");
+
             ws.onopen = () => {
-                statusEl.textContent = "✅ Connected";
-                statusEl.style.color = "green";
+                statusEl.textContent = "✅ Connected to " + SERVER_URL;
+                statusEl.style.background = "#d4edda";
+                statusEl.style.color = "#155724";
             };
 
             ws.onmessage = (event) => {
                 try {
                     const result = JSON.parse(event.data);
-                    
+
                     if (result.error) {
-                        outputEl.textContent = `Error: ${result.error}`;
+                        outputEl.textContent = `❌ Error: ${result.error}`;
                         return;
                     }
 
-                    // Pretty print results
-                    let html = `<strong>Prediction:</strong><br>`;
-                    
+                    let html = `<strong>🔍 Prediction:</strong><br><br>`;
+
                     if (result.results && result.results.length > 0) {
                         result.results.forEach(r => {
-                            const conf = (r.value * 100).toFixed(1);
-                            const cls = r.label;
-                            html += `${cls}: <span class="high-confidence">${conf}%</span><br>`;
+                            const confidence = (r.value * 100).toFixed(1);
+                            html += `${r.label}: <span class="high-confidence">${confidence}%</span><br>`;
                         });
                     } else {
                         html += JSON.stringify(result, null, 2);
                     }
-                    
+
                     outputEl.innerHTML = html;
                 } catch (e) {
                     outputEl.textContent = event.data;
@@ -78,25 +102,29 @@
             };
 
             ws.onclose = () => {
-                statusEl.textContent = "❌ Disconnected";
-                statusEl.style.color = "red";
+                statusEl.textContent = "❌ Disconnected (Refresh page)";
+                statusEl.style.background = "#f8d7da";
+                statusEl.style.color = "#721c24";
             };
 
             ws.onerror = () => {
-                statusEl.textContent = "❌ WebSocket Error";
-                statusEl.style.color = "red";
+                statusEl.textContent = "❌ Connection Error - Check Render Logs";
+                statusEl.style.background = "#f8d7da";
+                statusEl.style.color = "#721c24";
             };
         }
 
+        // Start Microphone
         startBtn.onclick = async () => {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: { 
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
                         sampleRate: 16000,
                         channelCount: 1,
                         echoCancellation: true,
-                        noiseSuppression: true
-                    } 
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
                 });
 
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({
@@ -111,9 +139,7 @@
 
                 processor.onaudioprocess = (e) => {
                     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
                     const samples = e.inputBuffer.getChannelData(0);
-                    // Send as array (Edge Impulse WASM expects Float32)
                     ws.send(JSON.stringify(Array.from(samples)));
                 };
 
@@ -123,22 +149,25 @@
 
             } catch (err) {
                 console.error(err);
-                alert("Microphone access denied or not supported.");
+                alert("Microphone access failed or not allowed.");
             }
         };
 
+        // Stop Microphone
         stopBtn.onclick = () => {
             if (processor) processor.disconnect();
             if (stream) stream.getTracks().forEach(track => track.stop());
             if (audioContext) audioContext.close();
-            
+
             startBtn.disabled = false;
             stopBtn.disabled = true;
-            statusEl.textContent = "Stopped";
+            statusEl.textContent = "✅ Stopped";
         };
 
-        // Auto-connect WebSocket
-        connectWebSocket();
+        // Auto connect on page load
+        window.onload = () => {
+            connectWebSocket();
+        };
     </script>
 </body>
 </html>
