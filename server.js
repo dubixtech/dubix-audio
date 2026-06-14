@@ -21,28 +21,42 @@ const WINDOW_SIZE = Math.floor((SAMPLE_RATE * WINDOW_MS) / 1000);
 const STRIDE_SIZE = Math.floor((SAMPLE_RATE * STRIDE_MS) / 1000);
 
 /* =========================
-   MODEL STATE
+   STATE
 ========================= */
 let classifier = null;
 let modelReady = false;
 
+let wasmPtr = null;
+let wasmView = null;
+
 /* =========================
-   WASM INIT
+   RESULT PARSER
 ========================= */
-Module.onRuntimeInitialized = () => {
-    classifier = {
-        run: Module.run_classifier,
-        getProps: Module.get_properties
+function parseResult(ret) {
+    if (!ret) return { error: "empty result" };
+
+    const out = {
+        anomaly: ret.anomaly ?? null,
+        results: []
     };
 
-    modelReady = true;
-    console.log("✅ Edge Impulse WASM ready");
+    if (ret.classification?.size) {
+        for (let i = 0; i < ret.classification.size(); i++) {
+            const c = ret.classification.get(i);
+            out.results.push({
+                label: c.label,
+                value: c.value
+            });
+        }
+    } else if (ret.results) {
+        out.results = ret.results;
+    }
 
-    console.log("Model:", classifier.getProps?.());
-};
+    return out;
+}
 
 /* =========================
-   RING BUFFER HELPERS
+   RING BUFFER
 ========================= */
 function createRingBuffer(size) {
     return {
@@ -73,41 +87,38 @@ function linearize(ring) {
 }
 
 /* =========================
-   WASM MEMORY (REUSED)
+   SAFE INFERENCE
 ========================= */
-let wasmPtr = null;
-let wasmView = null;
+let inferenceBusy = false;
 
-function initWasmBuffer() {
-    wasmPtr = Module._malloc(WINDOW_SIZE * 4);
-    wasmView = new Float32Array(Module.HEAPF32.buffer, wasmPtr, WINDOW_SIZE);
-}
+function runInference(ring, ws) {
+    if (inferenceBusy || !modelReady) return;
+    if (ring.filled < WINDOW_SIZE) return;
 
-/* =========================
-   RESULT PARSER
-========================= */
-function parseResult(ret) {
-    if (!ret) return { error: "empty" };
+    inferenceBusy = true;
 
-    const out = {
-        anomaly: ret.anomaly ?? null,
-        results: []
-    };
+    setImmediate(() => {
+        try {
+            const linear = linearize(ring);
 
-    if (ret.classification?.size) {
-        for (let i = 0; i < ret.classification.size(); i++) {
-            const c = ret.classification.get(i);
-            out.results.push({ label: c.label, value: c.value });
+            wasmView.set(linear);
+
+            const result = classifier.run(wasmPtr, WINDOW_SIZE, false);
+
+            const clean = parseResult(result);
+
+            ws.send(JSON.stringify(clean));
+
+        } catch (e) {
+            console.error("Inference error:", e);
+        } finally {
+            inferenceBusy = false;
         }
-    } else if (ret.results) {
-        out.results = ret.results;
-    }
-
-    return out;
+    });
 }
 
 /* =========================
-   WEBSOCKET SERVER
+   WEBSOCKET
 ========================= */
 wss.on("connection", (ws) => {
     console.log("📡 client connected");
@@ -115,7 +126,6 @@ wss.on("connection", (ws) => {
     const ring = createRingBuffer(WINDOW_SIZE);
 
     let strideCounter = 0;
-    let inferenceInProgress = false;
 
     ws.on("message", (msg) => {
         if (!modelReady) return;
@@ -123,51 +133,62 @@ wss.on("connection", (ws) => {
         try {
             const samples = new Float32Array(JSON.parse(msg));
 
-            // push into ring buffer
             pushSamples(ring, samples);
 
             strideCounter += samples.length;
 
             if (strideCounter < STRIDE_SIZE) return;
-            if (ring.filled < WINDOW_SIZE) return;
-            if (inferenceInProgress) return;
 
             strideCounter = 0;
-            inferenceInProgress = true;
 
-            // REAL-TIME SAFE INFERENCE
-            setImmediate(() => {
-                try {
-                    const linear = linearize(ring);
-
-                    wasmView.set(linear);
-
-                    const result = classifier.run(wasmPtr, WINDOW_SIZE, false);
-
-                    const clean = parseResult(result);
-
-                    ws.send(JSON.stringify(clean));
-
-                    console.log("🔊 inference:", clean);
-                } catch (e) {
-                    console.error("Inference error:", e);
-                } finally {
-                    inferenceInProgress = false;
-                }
-            });
+            runInference(ring, ws);
 
         } catch (err) {
             console.error("WS error:", err.message);
         }
     });
 
-    ws.on("close", () => console.log("📴 client disconnected"));
+    ws.on("close", () => {
+        console.log("📴 client disconnected");
+    });
 });
+
+/* =========================
+   WASM INIT (CRITICAL FIX)
+========================= */
+Module.onRuntimeInitialized = () => {
+    try {
+        classifier = {
+            run: Module.run_classifier,
+            getProps: Module.get_properties
+        };
+
+        console.log("✅ WASM runtime ready");
+        console.log(classifier.getProps?.());
+
+        // 🔥 SAFE ALLOCATION (ONLY HERE)
+        wasmPtr = Module._malloc(WINDOW_SIZE * 4);
+
+        wasmView = new Float32Array(
+            Module.HEAPF32.buffer,
+            wasmPtr,
+            WINDOW_SIZE
+        );
+
+        modelReady = true;
+
+        console.log("🧠 WASM buffer allocated");
+
+    } catch (e) {
+        console.error("WASM init failed:", e);
+    }
+};
 
 /* =========================
    START SERVER
 ========================= */
-server.listen(3000, "0.0.0.0", () => {
-    initWasmBuffer();
-    console.log("🚀 server running on port 3000");
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 server running on port ${PORT}`);
 });
