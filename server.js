@@ -40,8 +40,8 @@ Module.onRuntimeInitialized = () => {
    WEBSOCKET
 ========================= */
 wss.on("connection", (ws) => {
-    console.log("📡 Client connected via WebSocket");
-    
+    console.log("📡 Client connected");
+
     const audioBuffer = new Float32Array(WINDOW_SIZE);
     let writeIndex = 0;
     let strideCounter = 0;
@@ -73,7 +73,11 @@ wss.on("connection", (ws) => {
     ws.on("close", () => console.log("📴 Client disconnected"));
 });
 
-server.listen(3000, "0.0.0.0", () => {
-    console.log("🚀 Server running on http://localhost:3000");
-    console.log("🔌 WebSocket ready at ws://localhost:3000");
+/* =========================
+   START SERVER (Important for Render)
+========================= */
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🔌 WebSocket ready`);
 });
