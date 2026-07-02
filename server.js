@@ -56,4 +56,3 @@ app.listen(PORT, "0.0.0.0", () => {
     console.log(`Audio server running`);
     console.log(`URL: http://localhost:${PORT}/song.mp3`);
 });
-```
