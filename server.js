@@ -10,46 +10,54 @@ const PORT = process.env.PORT || 3000;
 const MP3_FILE = path.join(__dirname, "song.mp3");
 
 app.get("/", (req, res) => {
-    res.send("<h1>ESP32 WebSocket Audio Streamer</h1><p>Connected to /ws/audio</p>");
+    res.send("<h1>Dubix ESP32 Audio Streamer</h1><p>WebSocket: /audio</p>");
 });
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, path: "/ws/audio" });
+const wss = new WebSocket.Server({ 
+    server, 
+    path: "/audio"        // ← Matches your ESP32 ws_path
+});
 
 wss.on("connection", (ws) => {
-    console.log("✅ ESP32 Connected");
+    console.log("✅ ESP32 Connected to /audio");
 
     if (!fs.existsSync(MP3_FILE)) {
-        ws.send("ERROR: song.mp3 not found");
+        console.error("❌ song.mp3 not found!");
         ws.close();
         return;
     }
 
-    const streamLoop = () => {
-        const stream = fs.createReadStream(MP3_FILE, { highWaterMark: 1024 });
+    console.log("🎵 Streaming song.mp3...");
 
-        stream.on("data", (chunk) => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(chunk);
-            } else {
-                stream.destroy();
-            }
-        });
+    const stream = fs.createReadStream(MP3_FILE, { highWaterMark: 1024 });
 
-        stream.on("end", () => {
-            console.log("Song finished - looping...");
-            if (ws.readyState === WebSocket.OPEN) {
-                setTimeout(streamLoop, 500); // Small delay before repeat
-            }
-        });
-    };
+    stream.on("data", (chunk) => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(chunk);   // Send raw binary
+        }
+    });
 
-    streamLoop();
+    stream.on("end", () => {
+        console.log("✅ Song finished - restarting stream (loop)");
+        setTimeout(() => {
+            if (ws.readyState === WebSocket.OPEN) streamLoop(); // Simple loop
+        }, 800);
+    });
 
-    ws.on("close", () => console.log("❌ ESP32 Disconnected"));
+    function streamLoop() {
+        const newStream = fs.createReadStream(MP3_FILE, { highWaterMark: 1024 });
+        newStream.on("data", chunk => ws.readyState === WebSocket.OPEN && ws.send(chunk));
+        newStream.on("end", () => setTimeout(streamLoop, 500));
+    }
+
+    ws.on("close", () => {
+        console.log("❌ ESP32 disconnected");
+        stream.destroy();
+    });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🔌 WebSocket URL: ws://your-domain/ws/audio`);
+    console.log(`🔌 ESP32 should connect to wss://dubix-audio.onrender.com/audio`);
 });
