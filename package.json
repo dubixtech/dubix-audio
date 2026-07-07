@@ -1,11 +1,16 @@
 {
   "name": "esp32-audio-stream",
   "version": "1.0.0",
+  "description": "WebSocket MP3 streamer for ESP32 (Helix decoder)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
