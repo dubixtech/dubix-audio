@@ -7,78 +7,49 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Path to your MP3 file
 const MP3_FILE = path.join(__dirname, "song.mp3");
 
 app.get("/", (req, res) => {
-    res.send(`
-        <h1>ESP32 MP3 WebSocket Server</h1>
-        <p>WebSocket endpoint: <strong>ws://your-domain/ws/audio</strong></p>
-        <p>Put your <code>song.mp3</code> in the same folder.</p>
-    `);
+    res.send("<h1>ESP32 WebSocket Audio Streamer</h1><p>Connected to /ws/audio</p>");
 });
 
-// Create HTTP server
 const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: "/ws/audio" });
 
-// Create WebSocket Server
-const wss = new WebSocket.Server({ 
-    server,
-    path: "/audio"   // Must match ESP32 ws_path
-});
-
-wss.on("connection", (ws, req) => {
-    console.log("✅ ESP32 Connected via WebSocket");
+wss.on("connection", (ws) => {
+    console.log("✅ ESP32 Connected");
 
     if (!fs.existsSync(MP3_FILE)) {
-        console.error("MP3 file not found!");
-        ws.send("ERROR: MP3 file not found on server");
+        ws.send("ERROR: song.mp3 not found");
         ws.close();
         return;
     }
 
-    const fileSize = fs.statSync(MP3_FILE).size;
-    const stream = fs.createReadStream(MP3_FILE, { highWaterMark: 1024 }); // Chunk size
+    const streamLoop = () => {
+        const stream = fs.createReadStream(MP3_FILE, { highWaterMark: 1024 });
 
-    console.log(`Streaming ${MP3_FILE} (${(fileSize/1024/1024).toFixed(2)} MB)`);
+        stream.on("data", (chunk) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(chunk);
+            } else {
+                stream.destroy();
+            }
+        });
 
-    stream.on("data", (chunk) => {
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.send(chunk);           // Send raw binary MP3 data
-        } else {
-            stream.destroy();
-        }
-    });
+        stream.on("end", () => {
+            console.log("Song finished - looping...");
+            if (ws.readyState === WebSocket.OPEN) {
+                setTimeout(streamLoop, 500); // Small delay before repeat
+            }
+        });
+    };
 
-    stream.on("end", () => {
-        console.log("✅ Finished streaming MP3");
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.close(1000, "Stream finished");
-        }
-    });
+    streamLoop();
 
-    stream.on("error", (err) => {
-        console.error("Stream error:", err);
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.close(1011, "Stream error");
-        }
-    });
-
-    // Handle client disconnect
-    ws.on("close", () => {
-        console.log("❌ ESP32 disconnected");
-        stream.destroy();
-    });
-
-    ws.on("error", (err) => {
-        console.error("WebSocket error:", err);
-        stream.destroy();
-    });
+    ws.on("close", () => console.log("❌ ESP32 Disconnected"));
 });
 
-// Start server
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🌐 HTTP : http://localhost:${PORT}`);
-    console.log(`🔌 WebSocket (WSS ready): ws://your-domain/ws/audio`);
+    console.log(`🔌 WebSocket URL: ws://your-domain/ws/audio`);
 });
