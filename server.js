@@ -13,7 +13,9 @@ fastify.addContentTypeParser(
     done(null, body);
   }
 );
-
+fastify.get("/", async () => {
+  return "Server is running";
+});
 fastify.post("/upload", async (request, reply) => {
   try {
     const audioBuffer = request.body;
