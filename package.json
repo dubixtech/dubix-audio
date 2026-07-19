@@ -1,16 +1,16 @@
+
 {
-  "name": "esp32-audio-stream",
+  "name": "esp32-audio-upload-server",
   "version": "1.0.0",
-  "description": "WebSocket MP3 streamer for ESP32 (Helix decoder)",
+  "description": "ESP32 audio upload server using Fastify",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "ws": "^8.18.0"
+    "fastify": "^5.6.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }
