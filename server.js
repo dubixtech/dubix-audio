@@ -1,16 +1,15 @@
 const fastify = require("fastify")({
   logger: true,
-  bodyLimit: 20 * 1024 * 1024 // 20MB
+  bodyLimit: 20 * 1024 * 1024
 });
 
 const fs = require("fs");
 const path = require("path");
 
-// Create uploads directory if missing
-const uploadsDir = path.join(__dirname, "uploads");
-fs.mkdirSync(uploadsDir, { recursive: true });
+const UPLOAD_DIR = path.join(__dirname, "uploads");
 
-// Parse raw binary uploads
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
 fastify.addContentTypeParser(
   "application/octet-stream",
   { parseAs: "buffer" },
@@ -19,97 +18,115 @@ fastify.addContentTypeParser(
   }
 );
 
-// Health check
 fastify.get("/", async () => {
   return {
-    status: "online",
-    service: "ESP32 Audio Upload Server"
+    status: "online"
   };
 });
 
-// Upload endpoint
 fastify.post("/upload", async (request, reply) => {
   try {
     const audioBuffer = request.body;
 
     if (!audioBuffer || !Buffer.isBuffer(audioBuffer)) {
       return reply.code(400).send({
-        success: false,
         error: "No audio received"
       });
     }
 
     const filename = `audio_${Date.now()}.pcm`;
-    const filepath = path.join(uploadsDir, filename);
+    const filepath = path.join(UPLOAD_DIR, filename);
 
     fs.writeFileSync(filepath, audioBuffer);
-
-    fastify.log.info(
-      `Saved ${audioBuffer.length} bytes to ${filename}`
-    );
 
     return {
       success: true,
       file: filename,
-      bytes: audioBuffer.length,
-      downloadUrl: `/download/${filename}`
+      bytes: audioBuffer.length
     };
-
   } catch (err) {
-    fastify.log.error(err);
-
     return reply.code(500).send({
-      success: false,
       error: err.message
     });
   }
 });
 
-// Download endpoint
-fastify.get("/download/:filename", async (request, reply) => {
-  const filename = request.params.filename;
-  const filepath = path.join(uploadsDir, filename);
+function createWavHeader(dataSize) {
+  const sampleRate = 16000;
+  const channels = 1;
+  const bitsPerSample = 16;
 
-  if (!fs.existsSync(filepath)) {
-    return reply.code(404).send({
-      success: false,
-      error: "File not found"
-    });
-  }
+  const header = Buffer.alloc(44);
 
-  reply.header(
-    "Content-Disposition",
-    `attachment; filename="${filename}"`
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8);
+
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+
+  header.writeUInt32LE(
+    sampleRate * channels * bitsPerSample / 8,
+    28
   );
 
-  reply.type("application/octet-stream");
+  header.writeUInt16LE(
+    channels * bitsPerSample / 8,
+    32
+  );
 
-  return fs.createReadStream(filepath);
-});
+  header.writeUInt16LE(bitsPerSample, 34);
 
-// List uploaded files
-fastify.get("/files", async () => {
-  const files = fs.readdirSync(uploadsDir);
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
 
-  return {
-    count: files.length,
-    files
+  return header;
+}
+
+function serveAudio(index) {
+  return async (request, reply) => {
+    const files = fs.readdirSync(UPLOAD_DIR)
+      .filter(f => f.endsWith(".pcm"))
+      .sort()
+      .reverse();
+
+    if (files.length < index) {
+      return reply.code(404).send({
+        error: "Audio not found"
+      });
+    }
+
+    const file = files[index - 1];
+    const filepath = path.join(UPLOAD_DIR, file);
+
+    const pcmData = fs.readFileSync(filepath);
+    const wavHeader = createWavHeader(pcmData.length);
+
+    reply.type("audio/wav");
+    reply.header(
+      "Content-Disposition",
+      `attachment; filename="${file.replace(".pcm", ".wav")}"`
+    );
+
+    return Buffer.concat([
+      wavHeader,
+      pcmData
+    ]);
   };
-});
+}
 
-const PORT = process.env.PORT || 10000;
+fastify.get("/audio1", serveAudio(1)); // newest
+fastify.get("/audio2", serveAudio(2));
+fastify.get("/audio3", serveAudio(3));
+fastify.get("/audio4", serveAudio(4));
+fastify.get("/audio5", serveAudio(5));
+
+const PORT = process.env.PORT || 3000;
 
 fastify.listen({
   host: "0.0.0.0",
   port: PORT
-}, (err) => {
-  if (err) {
-    fastify.log.error(err);
-    process.exit(1);
-  }
-
-  fastify.log.info(
-    `Server running on port ${PORT}`
-  );
 });
-
